@@ -1,0 +1,231 @@
+# StepSearch Configuration File
+
+# Model Configuration
+model:
+  name: "Qwen/Qwen2.5-3B-Base"           # Base model to use
+  max_length: 2048                        # Maximum sequence length
+  cache_dir: "./cache"                     # Model cache directory
+  device_map: "auto"                       # Device mapping strategy
+  torch_dtype: "float16"                   # Model precision
+  trust_remote_code: true                  # Trust remote code for model loading
+
+# Training Configuration
+training:
+  # Basic training settings
+  batch_size: 32                          # Training batch size
+  mini_batch_size: 8                      # Mini-batch size for gradient accumulation
+  micro_batch_size: 4                     # Micro-batch size for memory optimization
+
+  # Learning rates
+  learning_rate: 7e-7                     # Policy network learning rate
+  value_lr: 7e-6                          # Value network learning rate
+
+  # Training schedule
+  num_epochs: 10                          # Number of training epochs
+  max_steps: 500                          # Maximum training steps
+  warmup_steps: 50                        # Learning rate warmup steps
+  warmup_ratio: 0.285                     # Warmup ratio
+
+  # PPO specific parameters
+  clip_range: 0.2                         # PPO clipping range
+  kl_coef: 1e-3                           # KL divergence coefficient
+  value_loss_coef: 0.5                    # Value loss coefficient
+  entropy_coef: 0.01                      # Entropy coefficient
+
+  # Gradient settings
+  max_grad_norm: 1.0                      # Maximum gradient norm for clipping
+
+  # GAE settings
+  gamma: 0.99                             # Discount factor
+  gae_lambda: 0.95                        # GAE lambda parameter
+
+  # Optimization settings
+  optimizer: "adamw"                      # Optimizer type
+  weight_decay: 0.01                      # Weight decay
+  adam_epsilon: 1e-8                      # Adam epsilon
+
+  # Memory and performance
+  gradient_accumulation_steps: 4          # Gradient accumulation steps
+  dataloader_num_workers: 4               # DataLoader workers
+  fp16: true                              # Use mixed precision training
+
+  # Checkpointing
+  save_steps: 200                         # Save checkpoint every N steps
+  save_limit: 5                           # Maximum number of checkpoints to keep
+  eval_steps: 100                         # Evaluation interval
+  logging_steps: 10                       # Logging interval
+
+# Reward Configuration
+reward:
+  # Global reward weights
+  gamma_key: 0.1                          # Search key reward weight
+
+  # Step-wise reward settings
+  redundancy_threshold: 0.8               # Similarity threshold for redundancy penalty
+  max_search_steps: 5                     # Maximum search steps per episode
+
+  # Information gain settings
+  similarity_metric: "cosine"             # Similarity metric for information gain
+  gain_normalization: true                # Normalize information gain
+
+  # Reward normalization
+  normalize_rewards: true                 # Whether to normalize rewards
+  reward_momentum: 0.99                   # Momentum for reward normalization
+
+# Data Configuration
+data:
+  # Paths
+  musique_path: "./data/raw/musique"      # Path to MuSiQue dataset
+  output_path: "./data/processed"         # Output path for processed data
+
+  # Processing settings
+  num_search_queries: 5                   # Number of search queries per sub-question
+  min_engines: 2                          # Minimum search engines for query validation
+  max_train_samples: 19000                # Maximum training samples
+  max_dev_samples: 2000                   # Maximum development samples
+
+  # Text processing
+  max_text_length: 1000                   # Maximum text length for documents
+  min_text_length: 10                     # Minimum text length for documents
+
+  # Quality filters
+  min_query_length: 3                     # Minimum query length
+  max_query_length: 100                   # Maximum query length
+
+# Search Configuration
+search:
+  # Engine settings
+  engine_type: "wiki"                     # Search engine type: wiki, tfidf, mock, hybrid
+  top_k: 3                                # Number of documents to retrieve
+
+  # Wikipedia settings (for wiki engine)
+  wiki_dump_path: "./data/knowledge_base/wiki18"
+  index_path: "./data/knowledge_base/wiki_index"
+
+  # TF-IDF settings (for tfidf engine)
+  max_features: 50000                     # Maximum TF-IDF features
+  ngram_range: [1, 2]                     # N-gram range for TF-IDF
+
+  # Retrieval settings
+  similarity_threshold: 0.01              # Minimum similarity for relevance
+  max_doc_length: 500                     # Maximum document length for retrieval
+
+  # Hybrid engine settings (for hybrid engine)
+  engines:
+    - engine_type: "wiki"
+      weight: 0.7
+    - engine_type: "tfidf"
+      weight: 0.3
+  weights: [0.7, 0.3]
+
+# Evaluation Configuration
+evaluation:
+  # Datasets to evaluate on
+  datasets: ["hotpotqa", "2wiki", "musique", "bamboogle"]
+
+  # Metrics to compute
+  metrics: ["em", "f1", "search_efficiency", "reasoning_quality"]
+
+  # Output settings
+  output_dir: "./results"
+  save_predictions: true
+  compare_baselines: true
+
+  # Evaluation limits
+  max_samples_per_dataset: null           # Limit evaluation samples (null for no limit)
+
+  # Generation settings for evaluation
+  eval_temperature: 0.1                   # Temperature for evaluation generation
+  eval_do_sample: false                   # Whether to sample during evaluation
+  eval_max_new_tokens: 512                # Max new tokens for evaluation
+
+# Logging Configuration
+logging:
+  # Basic settings
+  level: "INFO"                           # Logging level
+  log_dir: "./logs"                       # Log directory
+
+  # Experiment tracking
+  experiment_name: "stepsearch"           # Experiment name
+  use_wandb: false                        # Use Weights & Biases logging
+  wandb_project: "stepsearch"             # W&B project name
+  use_tensorboard: true                   # Use TensorBoard logging
+
+  # Log file settings
+  max_log_files: 10                       # Maximum log files to keep
+  log_rotation: true                      # Enable log rotation
+
+# Hardware Configuration
+hardware:
+  # GPU settings
+  cuda_visible_devices: null              # CUDA devices to use (null for auto)
+  mixed_precision: true                   # Use mixed precision training
+
+  # Memory optimization
+  gradient_checkpointing: true            # Use gradient checkpointing
+  cpu_offload: false                      # Offload to CPU when possible
+
+  # Distributed training
+  distributed: false                      # Enable distributed training
+  deepspeed: false                        # Use DeepSpeed
+  fsdp: false                             # Use Fully Sharded Data Parallel
+
+# Environment Configuration
+environment:
+  # Random seeds
+  seed: 42                                # Random seed for reproducibility
+  deterministic: true                     # Ensure deterministic behavior
+
+  # API keys (load from environment variables)
+  openai_api_key: ${OPENAI_API_KEY}      # OpenAI API key
+  huggingface_token: ${HUGGINGFACE_TOKEN} # HuggingFace token
+
+  # Paths
+  cache_dir: "./cache"                    # General cache directory
+  temp_dir: "./temp"                      # Temporary files directory
+
+  # Resource limits
+  max_memory_per_gpu: null                # Maximum memory per GPU (GB)
+  max_cpu_memory: null                    # Maximum CPU memory (GB)
+
+# Advanced Configuration
+advanced:
+  # Model modifications
+  use_flash_attention: false              # Use Flash Attention (if available)
+  compile_model: false                    # Compile model with torch.compile
+
+  # Training optimizations
+  use_8bit: false                         # Use 8-bit training
+  use_4bit: false                         # Use 4-bit training
+  lora_enabled: false                     # Enable LoRA fine-tuning
+
+  # LoRA settings (if enabled)
+  lora:
+    r: 16                                 # LoRA rank
+    alpha: 32                             # LoRA alpha
+    dropout: 0.1                          # LoRA dropout
+    target_modules: ["q_proj", "v_proj"]  # Target modules for LoRA
+
+  # Experimental features
+  use_dynamic_batching: false             # Dynamic batch sizing
+  adaptive_learning_rate: false           # Adaptive learning rate
+  curriculum_learning: false              # Curriculum learning
+
+# Debug Configuration
+debug:
+  # Debug modes
+  debug_mode: false                       # Enable debug mode
+  verbose_logging: false                  # Enable verbose logging
+  profile_training: false                 # Profile training performance
+
+  # Validation settings
+  validate_data: true                     # Validate data during loading
+  check_gradients: false                  # Check gradient flow
+
+  # Development settings
+  quick_test: false                       # Quick test mode (small data)
+  dummy_data: false                       # Use dummy data for testing
+
+  # Memory debugging
+  track_memory: false                     # Track memory usage
+  memory_profiling: false                 # Enable memory profiling
