@@ -28,7 +28,7 @@ def parse_arguments():
     parser.add_argument('--datasets', type=str, nargs='+',
                         default=['hotpotqa', '2wiki', 'musique', 'bamboogle'],
                         help='Datasets to evaluate on')
-    parser.add_argument('--data-dir', type=str, required=True,
+    parser.add_argument('--musique-dir', type=str, required=True,
                         help='Directory containing evaluation datasets')
     parser.add_argument('--output-dir', type=str, default='./results',
                         help='Output directory for results')

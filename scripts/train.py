@@ -29,16 +29,16 @@ def parse_arguments():
 
     parser.add_argument('--config', type=str, default='config/config.yaml',
                         help='Path to config file')
-    parser.add_argument('--data-path', type=str, required=True,
-                        help='Path to processed training data')
+    parser.add_argument('--musique-path', type=str, required=True,
+                        help='Path to processed training musique')
     parser.add_argument('--output-dir', type=str, default='./checkpoints',
                         help='Output directory for checkpoints')
     parser.add_argument('--resume', type=str, default=None,
                         help='Path to checkpoint to resume from')
     parser.add_argument('--max-samples', type=int, default=None,
                         help='Maximum number of training samples')
-    parser.add_argument('--eval-data-path', type=str, default=None,
-                        help='Path to evaluation data')
+    parser.add_argument('--eval-musique-path', type=str, default=None,
+                        help='Path to evaluation musique')
     parser.add_argument('--eval-interval', type=int, default=100,
                         help='Evaluation interval (steps)')
     parser.add_argument('--save-interval', type=int, default=200,
@@ -158,9 +158,9 @@ def main():
             start_epoch = trainer.load_checkpoint(args.resume)
 
         # 创建数据加载器
-        logger.info("Loading training data...")
+        logger.info("Loading training musique...")
         train_loader = create_data_loader(args.data_path, CONFIG, args.max_samples)
-        logger.info(f"Training data loaded: {len(train_loader)} batches")
+        logger.info(f"Training musique loaded: {len(train_loader)} batches")
 
         # 训练循环
         logger.info("Starting training loop...")

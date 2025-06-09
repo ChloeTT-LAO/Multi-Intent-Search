@@ -17,12 +17,12 @@ training:
   micro_batch_size: 4                     # Micro-batch size for memory optimization
 
   # Learning rates
-  learning_rate: 7e-7                     # Policy network learning rate
-  value_lr: 7e-6                          # Value network learning rate
+  learning_rate: 1e-6                     # Policy network learning rate
+  value_lr: 1e-5                          # Value network learning rate
 
   # Training schedule
-  num_epochs: 10                          # Number of training epochs
-  max_steps: 500                          # Maximum training steps
+  num_epochs: 3                          # Number of training epochs
+  max_steps: 200                          # Maximum training steps
   warmup_steps: 50                        # Learning rate warmup steps
   warmup_ratio: 0.285                     # Warmup ratio
 
@@ -75,14 +75,14 @@ reward:
 # Data Configuration
 data:
   # Paths
-  musique_path: "./data/raw/musique"      # Path to MuSiQue dataset
-  output_path: "./data/processed"         # Output path for processed data
+  musique_path: "./musique/raw/musique"      # Path to MuSiQue dataset
+  output_path: "./musique/processed"         # Output path for processed musique
 
   # Processing settings
   num_search_queries: 5                   # Number of search queries per sub-question
   min_engines: 2                          # Minimum search engines for query validation
-  max_train_samples: 19000                # Maximum training samples
-  max_dev_samples: 2000                   # Maximum development samples
+  max_train_samples: 1000                # Maximum training samples
+  max_dev_samples: 200                   # Maximum development samples
 
   # Text processing
   max_text_length: 1000                   # Maximum text length for documents
@@ -95,16 +95,17 @@ data:
 # Search Configuration
 search:
   # Engine settings
-  engine_type: "wiki"                     # Search engine type: wiki, tfidf, mock, hybrid
+  engine_type: "mock"                     # Search engine type: wiki, tfidf, mock, hybrid
   top_k: 3                                # Number of documents to retrieve
 
   # Wikipedia settings (for wiki engine)
-  wiki_dump_path: "./data/knowledge_base/wiki18"
-  index_path: "./data/knowledge_base/wiki_index"
+  wiki_dump_path: "./musique/knowledge_base/wiki18"
+  index_path: "./musique/knowledge_base/wiki_index"
 
   # TF-IDF settings (for tfidf engine)
   max_features: 50000                     # Maximum TF-IDF features
   ngram_range: [1, 2]                     # N-gram range for TF-IDF
+  documents_path: "./data/knowledge_base/documents.json"  # 知识库文档路径
 
   # Retrieval settings
   similarity_threshold: 0.01              # Minimum similarity for relevance
@@ -219,12 +220,12 @@ debug:
   profile_training: false                 # Profile training performance
 
   # Validation settings
-  validate_data: true                     # Validate data during loading
+  validate_data: true                     # Validate musique during loading
   check_gradients: false                  # Check gradient flow
 
   # Development settings
-  quick_test: false                       # Quick test mode (small data)
-  dummy_data: false                       # Use dummy data for testing
+  quick_test: false                       # Quick test mode (small musique)
+  dummy_data: false                       # Use dummy musique for testing
 
   # Memory debugging
   track_memory: false                     # Track memory usage

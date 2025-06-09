@@ -76,7 +76,7 @@ setup(
     package_data={
         "stepsearch": [
             "config/*.yaml",
-            "data/templates/*.txt",
+            "musique/templates/*.txt",
         ],
     },
     keywords=[

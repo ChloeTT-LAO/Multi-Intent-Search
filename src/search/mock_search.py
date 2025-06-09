@@ -237,7 +237,7 @@ class DomainMockSearchEngine(MockSearchEngine):
             return [
                 "Artificial Intelligence refers to computer systems that can perform tasks requiring human intelligence.",
                 "The Internet is a global network of interconnected computers.",
-                "Machine Learning is a subset of AI that enables computers to learn from data.",
+                "Machine Learning is a subset of AI that enables computers to learn from musique.",
                 "Blockchain is a distributed ledger technology used in cryptocurrencies.",
                 "Cloud computing provides on-demand access to computing resources over the internet.",
                 "5G is the fifth generation of wireless communication technology.",

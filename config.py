@@ -39,10 +39,10 @@ class DataConfig:
     """数据配置"""
     train_data_path: str = "src/data/enhanced_musique_train.json"
     test_data_paths: dict = field(default_factory=lambda: {
-        "hotpotqa": "data/hotpotqa_test.json",
-        "2wiki": "data/2wiki_test.json", 
-        "musique": "data/musique_test.json",
-        "bamboogle": "data/bamboogle_test.json"
+        "hotpotqa": "musique/hotpotqa_test.json",
+        "2wiki": "musique/2wiki_test.json",
+        "musique": "musique/musique_test.json",
+        "bamboogle": "musique/bamboogle_test.json"
     }) # type: ignore
     max_train_samples: Optional[int] = None
     

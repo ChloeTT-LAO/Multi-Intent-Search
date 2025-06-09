@@ -55,10 +55,10 @@ pip install -e .
 ### Data Preparation
 
 ```bash
-# Download and process MuSiQue data
+# Download and process MuSiQue musique
 python scripts/prepare_data.py \
-    --raw-data-dir ./data/raw \
-    --output-dir ./data/processed \
+    --raw-musique-dir ./musique/raw \
+    --output-dir ./musique/processed \
     --max-train-samples 1000 \
     --build-knowledge-base
 ```
@@ -68,9 +68,9 @@ python scripts/prepare_data.py \
 ```bash
 # Train StepSearch model
 python scripts/train.py \
-    --data-path ./data/processed/train_processed.json \
+    --musique-path ./musique/processed/train_processed.json \
     --output-dir ./checkpoints \
-    --eval-data-path ./data/processed/dev_processed.json
+    --eval-musique-path ./musique/processed/dev_processed.json
 ```
 
 ### Evaluation
@@ -80,7 +80,7 @@ python scripts/train.py \
 python scripts/evaluate.py \
     --model-path ./checkpoints/best_model \
     --datasets hotpotqa 2wiki musique bamboogle \
-    --data-dir ./data/eval \
+    --musique-dir ./musique/eval \
     --output-dir ./results \
     --compare-baselines
 ```
@@ -224,7 +224,7 @@ class CustomRewardCalculator(StepSearchRewardCalculator):
 ```python
 from src.data.dataset import StepSearchDataset
 
-# Prepare your data in the required format
+# Prepare your musique in the required format
 custom_data = [
     {
         'question': 'Your question',

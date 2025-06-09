@@ -491,7 +491,7 @@ def create_wikipedia_search(config: Dict[str, Any]) -> SearchEngine:
         )
     elif search_type == 'offline':
         return OfflineWikipediaSearch(
-            dump_path=config.get('dump_path', './data/wikipedia'),
+            dump_path=config.get('dump_path', './musique/wikipedia'),
             index_path=config.get('index_path', None)
         )
     else:

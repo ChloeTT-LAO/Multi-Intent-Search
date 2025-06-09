@@ -25,8 +25,8 @@ class TestDataPipeline:
     def config(self):
         """测试配置"""
         test_config = CONFIG.copy()
-        test_config['data']['num_search_queries'] = 3
-        test_config['data']['min_engines'] = 1
+        test_config['musique']['num_search_queries'] = 3
+        test_config['musique']['min_engines'] = 1
         return test_config
 
     @pytest.fixture
@@ -60,7 +60,7 @@ class TestDataPipeline:
         pipeline = DataPipeline(config)
 
         assert pipeline.config == config
-        assert pipeline.data_config == config['data']
+        assert pipeline.data_config == config['musique']
         assert len(pipeline.search_engines) > 0
 
     @patch('openai.ChatCompletion.create')
