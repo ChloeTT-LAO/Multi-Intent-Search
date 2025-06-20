@@ -441,15 +441,16 @@ class DataPipeline:
             print("queries: ", queries)
 
             # 步骤3: 验证查询
-            print("Start to evaluate queries...")
-            valid_queries = [q for q in queries if self.validate_query_with_engines(q)]
+            # print("Start to evaluate queries...")
+            # valid_queries = [q for q in queries if self.validate_query_with_engines(q)]
 
-            if valid_queries:
-                search_trajectories.append({
-                    'sub_question': subq,
-                    'reasoning': subq_data['reasoning'],
-                    'search_queries': valid_queries
-                })
+            if queries:
+                if isinstance(queries, list) and all(isinstance(q, str) for q in queries):
+                    search_trajectories.append({
+                        'sub_question': subq,
+                        'reasoning': subq_data['reasoning'],
+                        'search_queries': list(set(queries))
+                    })
 
         if not search_trajectories:
             return None
