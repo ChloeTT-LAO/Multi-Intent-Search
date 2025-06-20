@@ -1,441 +1,586 @@
-@abstractmethod
-def search_multimodal(self, text_query: str = None, image_query: Union[str, Image.Image] = None,
-                      top_k: int = 3) -> List[Dict[str, Any]]:
-    """多模态搜索"""
-    pass
+"""
+改进版多模态搜索引擎实现
+"""
+
+import base64
+import io
+import numpy as np
+import torch
+import torch.nn.functional as F
+from abc import ABC, abstractmethod
+from typing import List, Dict, Any, Optional, Union, Tuple
+from PIL import Image
+from pathlib import Path
+import logging
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
+import json
+import pickle
+from collections import defaultdict
+import time
+
+logger = logging.getLogger(__name__)
 
 
-def search(self, query: str, top_k: int = 3) -> List[str]:
-    """兼容原有接口的文本搜索"""
-    results = self.search_multimodal(text_query=query, top_k=top_k)
-    return [result.get('text', '') for result in results]
+class MultimodalSearchEngine(ABC):
+    """多模态搜索引擎抽象基类"""
+
+    @abstractmethod
+    def search_multimodal(self, text_query: str = None, image_query: Union[str, Image.Image] = None,
+                          top_k: int = 3) -> List[Dict[str, Any]]:
+        """多模态搜索"""
+        pass
+
+    @abstractmethod
+    def add_documents(self, documents: List[Dict[str, Any]]) -> None:
+        """添加文档到索引"""
+        pass
+
+    def search(self, query: str, top_k: int = 3) -> List[str]:
+        """兼容原有接口的文本搜索"""
+        results = self.search_multimodal(text_query=query, top_k=top_k)
+        return [result.get('text', '') for result in results]
 
 
-class ImageTextSearchEngine(MultimodalSearchEngine):
-    """图像-文本搜索引擎"""
+class CachedMultimodalSearchEngine(MultimodalSearchEngine):
+    """带缓存的多模态搜索引擎基类"""
 
-    def __init__(self, documents: List[Dict[str, Any]] = None):
-        """
-        初始化
-        documents: 包含'text'和可选'image'字段的文档列表
-        """
+    def __init__(self, cache_dir: str = "./cache/multimodal_search"):
+        self.cache_dir = Path(cache_dir)
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+
+        # 缓存设置
+        self.query_cache = {}
+        self.image_embedding_cache = {}
+        self.text_embedding_cache = {}
+        self.max_cache_size = 10000
+        self.cache_hit_count = 0
+        self.cache_miss_count = 0
+
+    def _get_cache_key(self, text_query: str = None, image_query: Union[str, Image.Image] = None) -> str:
+        """生成缓存键"""
+        key_parts = []
+        if text_query:
+            key_parts.append(f"text:{hash(text_query)}")
+        if image_query:
+            if isinstance(image_query, str):
+                key_parts.append(f"image_path:{hash(image_query)}")
+            else:
+                # 对PIL图像生成哈希
+                img_bytes = io.BytesIO()
+                image_query.save(img_bytes, format='PNG')
+                key_parts.append(f"image_data:{hash(img_bytes.getvalue())}")
+        return "_".join(key_parts)
+
+    def _manage_cache_size(self, cache_dict: dict):
+        """管理缓存大小"""
+        if len(cache_dict) > self.max_cache_size:
+            # 删除最旧的25%缓存项
+            items_to_remove = len(cache_dict) // 4
+            keys_to_remove = list(cache_dict.keys())[:items_to_remove]
+            for key in keys_to_remove:
+                del cache_dict[key]
+
+    def get_cache_stats(self) -> Dict[str, Any]:
+        """获取缓存统计"""
+        total_requests = self.cache_hit_count + self.cache_miss_count
+        hit_rate = self.cache_hit_count / total_requests if total_requests > 0 else 0
+
+        return {
+            'cache_hit_count': self.cache_hit_count,
+            'cache_miss_count': self.cache_miss_count,
+            'hit_rate': hit_rate,
+            'query_cache_size': len(self.query_cache),
+            'image_embedding_cache_size': len(self.image_embedding_cache),
+            'text_embedding_cache_size': len(self.text_embedding_cache)
+        }
+
+
+class AdvancedImageTextSearchEngine(CachedMultimodalSearchEngine):
+    """高级图像-文本搜索引擎"""
+
+    def __init__(self, documents: List[Dict[str, Any]] = None,
+                 cache_dir: str = "./cache/multimodal_search",
+                 model_name: str = "ViT-B/32",
+                 device: str = "auto"):
+        super().__init__(cache_dir)
+
         self.documents = documents or []
+        self.model_name = model_name
+        self.device = self._setup_device(device)
+
+        # 初始化模型
+        self.clip_model = None
+        self.clip_preprocess = None
         self.text_search_engine = None
-        self.image_encoder = None
 
-        # 初始化文本搜索
-        self.setup_text_search()
+        # 预计算的embeddings
+        self.image_embeddings = []
+        self.text_embeddings = []
 
-        # 初始化图像搜索
-        self.setup_image_search()
+        # 异步支持
+        self.executor = ThreadPoolExecutor(max_workers=4)
 
-    def setup_text_search(self):
-        """设置文本搜索"""
+        # 初始化组件
+        self._setup_models()
+        if self.documents:
+            self._process_documents()
+
+    def _setup_device(self, device: str) -> str:
+        """设置设备"""
+        if device == "auto":
+            if torch.cuda.is_available():
+                return "cuda"
+            elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+                return "mps"
+            else:
+                return "cpu"
+        return device
+
+    def _setup_models(self):
+        """设置模型"""
+        try:
+            import clip
+            self.clip_model, self.clip_preprocess = clip.load(self.model_name, device=self.device)
+            logger.info(f"CLIP model loaded: {self.model_name} on {self.device}")
+        except ImportError:
+            logger.warning("CLIP not available, falling back to text-only search")
+            self._setup_text_only_fallback()
+        except Exception as e:
+            logger.error(f"Failed to load CLIP model: {e}")
+            self._setup_text_only_fallback()
+
+    def _setup_text_only_fallback(self):
+        """设置纯文本搜索回退"""
         from ..search.search_engine import TFIDFSearchEngine
-
-        texts = [doc.get('text', '') for doc in self.documents]
+        texts = [doc.get('text', '') for doc in self.documents if doc.get('text')]
         if texts:
             self.text_search_engine = TFIDFSearchEngine(texts)
 
-    def setup_image_search(self):
-        """设置图像搜索"""
-        try:
-            import clip
-            import torch
+    def _process_documents(self):
+        """处理文档，预计算embeddings"""
+        logger.info(f"Processing {len(self.documents)} documents...")
 
-            device = "cuda" if torch.cuda.is_available() else "cpu"
-            self.clip_model, self.clip_preprocess = clip.load("ViT-B/32", device=device)
-
-            # 预计算图像embeddings
-            self.image_embeddings = []
-            self.setup_image_embeddings()
-
-        except ImportError:
-            print("CLIP not available, image search disabled")
-            self.clip_model = None
-
-    def setup_image_embeddings(self):
-        """预计算图像embeddings"""
         if self.clip_model is None:
             return
 
-        self.image_embeddings = []
-        device = next(self.clip_model.parameters()).device
+        # 批处理计算embeddings
+        batch_size = 32
 
+        # 处理文本embeddings
+        texts = []
         for doc in self.documents:
-            if 'image' in doc and doc['image'] is not None:
-                try:
-                    image = self.process_image(doc['image'])
-                    image_tensor = self.clip_preprocess(image).unsqueeze(0).to(device)
-
-                    with torch.no_grad():
-                        embedding = self.clip_model.encode_image(image_tensor)
-                        embedding = embedding / embedding.norm(dim=-1, keepdim=True)
-                        self.image_embeddings.append(embedding.cpu().numpy())
-                except Exception as e:
-                    print(f"Error processing image: {e}")
-                    self.image_embeddings.append(None)
+            text = doc.get('text', '')
+            if text:
+                texts.append(text)
             else:
-                self.image_embeddings.append(None)
+                texts.append("")  # 占位符
 
-    def process_image(self, image_input: Union[str, Image.Image]) -> Image.Image:
-        """处理图像输入"""
-        if isinstance(image_input, str):
-            if image_input.startswith('data:image'):
-                # Base64编码
-                header, data = image_input.split(',', 1)
-                image_data = base64.b64decode(data)
-                image = Image.open(io.BytesIO(image_data))
+        if texts:
+            self.text_embeddings = self._compute_text_embeddings_batch(texts, batch_size)
+
+        # 处理图像embeddings
+        images = []
+        for doc in self.documents:
+            image = doc.get('image')
+            if image:
+                processed_image = self._process_image(image)
+                images.append(processed_image)
             else:
-                # 文件路径
-                image = Image.open(image_input)
-        else:
-            image = image_input
+                images.append(None)
 
-        return image.convert('RGB')
+        if any(img is not None for img in images):
+            self.image_embeddings = self._compute_image_embeddings_batch(images, batch_size)
 
-    def search_by_text(self, text_query: str, top_k: int = 3) -> List[Tuple[int, float]]:
-        """文本搜索"""
-        if self.text_search_engine is None:
-            return []
+        logger.info("Document processing completed")
 
-        results = self.text_search_engine.search(text_query, top_k=len(self.documents))
-
-        # 计算相似度分数
-        scored_results = []
-        for i, result_text in enumerate(results):
-            # 找到对应的文档索引
-            for doc_idx, doc in enumerate(self.documents):
-                if doc.get('text', '') == result_text:
-                    scored_results.append((doc_idx, 1.0 - i / len(results)))
-                    break
-
-        return scored_results[:top_k]
-
-    def search_by_image(self, image_query: Union[str, Image.Image], top_k: int = 3) -> List[Tuple[int, float]]:
-        """图像搜索"""
-        if self.clip_model is None:
-            return []
+    def _compute_text_embeddings_batch(self, texts: List[str], batch_size: int) -> List[np.ndarray]:
+        """批量计算文本embeddings"""
+        embeddings = []
 
         try:
-            # 处理查询图像
-            query_image = self.process_image(image_query)
+            import clip
 
-            device = next(self.clip_model.parameters()).device
-            query_tensor = self.clip_preprocess(query_image).unsqueeze(0).to(device)
+            for i in range(0, len(texts), batch_size):
+                batch_texts = texts[i:i + batch_size]
 
-            # 编码查询图像
-            with torch.no_grad():
-                query_embedding = self.clip_model.encode_image(query_tensor)
-                query_embedding = query_embedding / query_embedding.norm(dim=-1, keepdim=True)
-                query_embedding = query_embedding.cpu().numpy()
+                # 过滤空文本
+                valid_texts = [text if text else "empty" for text in batch_texts]
 
-            # 计算相似度
-            similarities = []
-            for i, img_embedding in enumerate(self.image_embeddings):
-                if img_embedding is not None:
-                    similarity = np.dot(query_embedding, img_embedding.T)[0][0]
-                    similarities.append((i, similarity))
-                else:
-                    similarities.append((i, 0.0))
+                tokens = clip.tokenize(valid_texts, truncate=True).to(self.device)
 
-            # 排序并返回top_k
-            similarities.sort(key=lambda x: x[1], reverse=True)
-            return similarities[:top_k]
+                with torch.no_grad():
+                    batch_embeddings = self.clip_model.encode_text(tokens)
+                    batch_embeddings = batch_embeddings / batch_embeddings.norm(dim=-1, keepdim=True)
+                    embeddings.extend(batch_embeddings.cpu().numpy())
 
         except Exception as e:
-            print(f"Image search error: {e}")
-            return []
+            logger.error(f"Error computing text embeddings: {e}")
+            # 返回零向量作为回退
+            embeddings = [np.zeros(512) for _ in texts]
+
+        return embeddings
+
+    def _compute_image_embeddings_batch(self, images: List[Optional[Image.Image]],
+                                        batch_size: int) -> List[Optional[np.ndarray]]:
+        """批量计算图像embeddings"""
+        embeddings = []
+
+        try:
+            for i in range(0, len(images), batch_size):
+                batch_images = images[i:i + batch_size]
+                batch_tensors = []
+                batch_indices = []
+
+                # 准备有效图像
+                for j, img in enumerate(batch_images):
+                    if img is not None:
+                        try:
+                            tensor = self.clip_preprocess(img).unsqueeze(0)
+                            batch_tensors.append(tensor)
+                            batch_indices.append(i + j)
+                        except Exception as e:
+                            logger.warning(f"Failed to process image {i + j}: {e}")
+
+                # 计算embeddings
+                if batch_tensors:
+                    batch_tensor = torch.cat(batch_tensors).to(self.device)
+
+                    with torch.no_grad():
+                        batch_embeddings = self.clip_model.encode_image(batch_tensor)
+                        batch_embeddings = batch_embeddings / batch_embeddings.norm(dim=-1, keepdim=True)
+                        batch_embeddings = batch_embeddings.cpu().numpy()
+
+                    # 分配embeddings到正确位置
+                    for idx, embedding in zip(batch_indices, batch_embeddings):
+                        while len(embeddings) <= idx:
+                            embeddings.append(None)
+                        embeddings[idx] = embedding
+
+                # 填充空位置
+                while len(embeddings) < i + len(batch_images):
+                    embeddings.append(None)
+
+        except Exception as e:
+            logger.error(f"Error computing image embeddings: {e}")
+            embeddings = [None for _ in images]
+
+        return embeddings
+
+    def _process_image(self, image_input: Union[str, Image.Image, dict]) -> Optional[Image.Image]:
+        """处理图像输入"""
+        try:
+            if image_input is None:
+                return None
+
+            if isinstance(image_input, str):
+                if image_input.startswith('data:image'):
+                    # Base64编码
+                    header, data = image_input.split(',', 1)
+                    image_data = base64.b64decode(data)
+                    image = Image.open(io.BytesIO(image_data))
+                elif image_input.startswith('http'):
+                    # URL (这里需要添加下载逻辑)
+                    logger.warning(f"URL image loading not implemented: {image_input}")
+                    return None
+                else:
+                    # 文件路径
+                    image = Image.open(image_input)
+            elif isinstance(image_input, dict):
+                # 图像信息字典
+                if 'path' in image_input:
+                    image = Image.open(image_input['path'])
+                elif 'data' in image_input:
+                    image_data = base64.b64decode(image_input['data'])
+                    image = Image.open(io.BytesIO(image_data))
+                else:
+                    return None
+            else:
+                image = image_input
+
+            return image.convert('RGB') if image else None
+
+        except Exception as e:
+            logger.error(f"Failed to process image: {e}")
+            return None
+
+    def _encode_query(self, text_query: str = None,
+                      image_query: Union[str, Image.Image] = None) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
+        """编码查询"""
+        text_embedding = None
+        image_embedding = None
+
+        # 检查缓存
+        cache_key = self._get_cache_key(text_query, image_query)
+        if cache_key in self.query_cache:
+            self.cache_hit_count += 1
+            return self.query_cache[cache_key]
+
+        self.cache_miss_count += 1
+
+        if self.clip_model is None:
+            return text_embedding, image_embedding
+
+        try:
+            import clip
+
+            # 编码文本查询
+            if text_query:
+                text_key = f"text:{hash(text_query)}"
+                if text_key in self.text_embedding_cache:
+                    text_embedding = self.text_embedding_cache[text_key]
+                else:
+                    tokens = clip.tokenize([text_query], truncate=True).to(self.device)
+                    with torch.no_grad():
+                        text_embedding = self.clip_model.encode_text(tokens)
+                        text_embedding = text_embedding / text_embedding.norm(dim=-1, keepdim=True)
+                        text_embedding = text_embedding.cpu().numpy()[0]
+
+                    self.text_embedding_cache[text_key] = text_embedding
+                    self._manage_cache_size(self.text_embedding_cache)
+
+            # 编码图像查询
+            if image_query:
+                processed_image = self._process_image(image_query)
+                if processed_image:
+                    img_key = f"image:{hash(str(image_query))}"
+                    if img_key in self.image_embedding_cache:
+                        image_embedding = self.image_embedding_cache[img_key]
+                    else:
+                        image_tensor = self.clip_preprocess(processed_image).unsqueeze(0).to(self.device)
+                        with torch.no_grad():
+                            image_embedding = self.clip_model.encode_image(image_tensor)
+                            image_embedding = image_embedding / image_embedding.norm(dim=-1, keepdim=True)
+                            image_embedding = image_embedding.cpu().numpy()[0]
+
+                        self.image_embedding_cache[img_key] = image_embedding
+                        self._manage_cache_size(self.image_embedding_cache)
+
+        except Exception as e:
+            logger.error(f"Error encoding query: {e}")
+
+        # 缓存结果
+        result = (text_embedding, image_embedding)
+        self.query_cache[cache_key] = result
+        self._manage_cache_size(self.query_cache)
+
+        return result
 
     def search_multimodal(self, text_query: str = None, image_query: Union[str, Image.Image] = None,
-                          top_k: int = 3) -> List[Dict[str, Any]]:
+                          top_k: int = 3, fusion_strategy: str = "weighted_sum") -> List[Dict[str, Any]]:
         """多模态搜索"""
         if not text_query and not image_query:
             return []
 
-        all_scores = {}
-
-        # 文本搜索
-        if text_query:
-            text_results = self.search_by_text(text_query, top_k * 2)
-            for doc_idx, score in text_results:
-                all_scores[doc_idx] = all_scores.get(doc_idx, 0) + 0.5 * score
-
-        # 图像搜索
-        if image_query:
-            image_results = self.search_by_image(image_query, top_k * 2)
-            for doc_idx, score in image_results:
-                all_scores[doc_idx] = all_scores.get(doc_idx, 0) + 0.5 * score
-
-        # 排序并返回结果
-        sorted_results = sorted(all_scores.items(), key=lambda x: x[1], reverse=True)
-
-        final_results = []
-        for doc_idx, score in sorted_results[:top_k]:
-            result = {
-                'text': self.documents[doc_idx].get('text', ''),
-                'image': self.documents[doc_idx].get('image', None),
-                'score': score,
-                'doc_index': doc_idx
-            }
-            final_results.append(result)
-
-        return final_results
-
-    def add_documents(self, documents: List[Dict[str, Any]]) -> None:
-        """添加文档"""
-        self.documents.extend(documents)
-        # 重新设置搜索引擎
-        self.setup_text_search()
-        if self.clip_model is not None:
-            self.setup_image_embeddings()
-
-
-class CLIPSearchEngine(MultimodalSearchEngine):
-    """基于CLIP的搜索引擎"""
-
-    def __init__(self, model_name: str = "ViT-B/32"):
-        self.model_name = model_name
-        self.documents = []
-        self.text_embeddings = []
-        self.image_embeddings = []
-
-        # 加载CLIP模型
-        self.setup_clip_model()
-
-    def setup_clip_model(self):
-        """设置CLIP模型"""
-        try:
-            import clip
-            import torch
-
-            device = "cuda" if torch.cuda.is_available() else "cpu"
-            self.clip_model, self.clip_preprocess = clip.load(self.model_name, device=device)
-            self.device = device
-
-        except ImportError:
-            print("CLIP not available")
-            self.clip_model = None
-
-    def encode_text(self, text: str) -> np.ndarray:
-        """编码文本"""
         if self.clip_model is None:
-            return np.zeros(512)
-
-        try:
-            import clip
-
-            text_tokens = clip.tokenize([text]).to(self.device)
-            with torch.no_grad():
-                text_embedding = self.clip_model.encode_text(text_tokens)
-                text_embedding = text_embedding / text_embedding.norm(dim=-1, keepdim=True)
-
-            return text_embedding.cpu().numpy()[0]
-
-        except Exception as e:
-            print(f"Text encoding error: {e}")
-            return np.zeros(512)
-
-    def encode_image(self, image: Union[str, Image.Image]) -> np.ndarray:
-        """编码图像"""
-        if self.clip_model is None:
-            return np.zeros(512)
-
-        try:
-            if isinstance(image, str):
-                image = Image.open(image).convert('RGB')
-            elif not isinstance(image, Image.Image):
-                return np.zeros(512)
-
-            image_tensor = self.clip_preprocess(image).unsqueeze(0).to(self.device)
-
-            with torch.no_grad():
-                image_embedding = self.clip_model.encode_image(image_tensor)
-                image_embedding = image_embedding / image_embedding.norm(dim=-1, keepdim=True)
-
-            return image_embedding.cpu().numpy()[0]
-
-        except Exception as e:
-            print(f"Image encoding error: {e}")
-            return np.zeros(512)
-
-    def add_documents(self, documents: List[Dict[str, Any]]) -> None:
-        """添加文档并计算embeddings"""
-        for doc in documents:
-            self.documents.append(doc)
-
-            # 编码文本
-            text = doc.get('text', '')
-            text_embedding = self.encode_text(text)
-            self.text_embeddings.append(text_embedding)
-
-            # 编码图像
-            image = doc.get('image', None)
-            if image is not None:
-                image_embedding = self.encode_image(image)
-                self.image_embeddings.append(image_embedding)
-            else:
-                self.image_embeddings.append(np.zeros(512))
-
-    def search_multimodal(self, text_query: str = None, image_query: Union[str, Image.Image] = None,
-                          top_k: int = 3) -> List[Dict[str, Any]]:
-        """CLIP多模态搜索"""
-        if not self.documents:
+            # 回退到纯文本搜索
+            if text_query and self.text_search_engine:
+                texts = self.text_search_engine.search(text_query, top_k)
+                return [{'text': text, 'image': None, 'score': 1.0, 'doc_index': i}
+                        for i, text in enumerate(texts)]
             return []
 
-        if not text_query and not image_query:
-            return []
+        # 编码查询
+        text_embedding, image_embedding = self._encode_query(text_query, image_query)
 
-        query_embedding = np.zeros(512)
-
-        # 编码文本查询
-        if text_query:
-            text_emb = self.encode_text(text_query)
-            query_embedding += text_emb
-
-        # 编码图像查询
-        if image_query:
-            image_emb = self.encode_image(image_query)
-            query_embedding += image_emb
-
-        # 标准化查询embedding
-        query_embedding = query_embedding / np.linalg.norm(query_embedding)
-
-        # 计算与所有文档的相似度
-        similarities = []
-        for i, (text_emb, image_emb) in enumerate(zip(self.text_embeddings, self.image_embeddings)):
-            # 计算文本相似度
-            text_sim = np.dot(query_embedding, text_emb)
-
-            # 计算图像相似度
-            image_sim = np.dot(query_embedding, image_emb) if np.any(image_emb) else 0
-
-            # 组合相似度
-            combined_sim = 0.6 * text_sim + 0.4 * image_sim
-            similarities.append((i, combined_sim))
+        # 计算相似度
+        similarities = self._compute_similarities(text_embedding, image_embedding, fusion_strategy)
 
         # 排序并返回top_k
-        similarities.sort(key=lambda x: x[1], reverse=True)
+        top_indices = np.argsort(similarities)[-top_k:][::-1]
 
         results = []
-        for doc_idx, score in similarities[:top_k]:
-            result = {
-                'text': self.documents[doc_idx].get('text', ''),
-                'image': self.documents[doc_idx].get('image', None),
-                'score': score,
-                'doc_index': doc_idx
-            }
-            results.append(result)
+        for idx in top_indices:
+            if similarities[idx] > 0.01:  # 最小相关度阈值
+                result = {
+                    'text': self.documents[idx].get('text', ''),
+                    'image': self.documents[idx].get('image', None),
+                    'score': float(similarities[idx]),
+                    'doc_index': idx,
+                    'metadata': self.documents[idx].get('metadata', {})
+                }
+                results.append(result)
 
         return results
 
+    def _compute_similarities(self, text_embedding: Optional[np.ndarray],
+                              image_embedding: Optional[np.ndarray],
+                              fusion_strategy: str = "weighted_sum") -> np.ndarray:
+        """计算相似度"""
+        num_docs = len(self.documents)
+        similarities = np.zeros(num_docs)
 
-class HybridMultimodalSearchEngine(MultimodalSearchEngine):
-    """混合多模态搜索引擎"""
+        if fusion_strategy == "weighted_sum":
+            text_weight = 0.6 if text_embedding is not None else 0.0
+            image_weight = 0.4 if image_embedding is not None else 0.0
 
-    def __init__(self, search_engines: List[MultimodalSearchEngine], weights: List[float] = None):
-        self.search_engines = search_engines
-        self.weights = weights or [1.0] * len(search_engines)
+            # 重新标准化权重
+            total_weight = text_weight + image_weight
+            if total_weight > 0:
+                text_weight /= total_weight
+                image_weight /= total_weight
 
-        if len(self.weights) != len(self.search_engines):
-            raise ValueError("Number of weights must match number of search engines")
+        elif fusion_strategy == "max":
+            text_weight = 1.0 if text_embedding is not None else 0.0
+            image_weight = 1.0 if image_embedding is not None else 0.0
 
-    def search_multimodal(self, text_query: str = None, image_query: Union[str, Image.Image] = None,
-                          top_k: int = 3) -> List[Dict[str, Any]]:
-        """混合多模态搜索"""
-        all_results = {}
+        else:  # average
+            text_weight = 0.5
+            image_weight = 0.5
 
-        for engine, weight in zip(self.search_engines, self.weights):
-            try:
-                results = engine.search_multimodal(text_query, image_query, top_k * 2)
+        # 计算文本相似度
+        if text_embedding is not None and self.text_embeddings:
+            text_sims = np.array([
+                np.dot(text_embedding, doc_emb) if doc_emb is not None else 0.0
+                for doc_emb in self.text_embeddings
+            ])
 
-                for result in results:
-                    # 使用文档的唯一标识符（这里简化为文本）
-                    doc_key = result.get('text', '')[:100]  # 使用前100个字符作为key
+            if fusion_strategy == "max":
+                similarities = np.maximum(similarities, text_sims)
+            else:
+                similarities += text_weight * text_sims
 
-                    if doc_key not in all_results:
-                        all_results[doc_key] = result.copy()
-                        all_results[doc_key]['score'] = result['score'] * weight
-                    else:
-                        all_results[doc_key]['score'] += result['score'] * weight
+        # 计算图像相似度
+        if image_embedding is not None and self.image_embeddings:
+            image_sims = np.array([
+                np.dot(image_embedding, doc_emb) if doc_emb is not None else 0.0
+                for doc_emb in self.image_embeddings
+            ])
 
-            except Exception as e:
-                print(f"Error in search engine: {e}")
-                continue
+            if fusion_strategy == "max":
+                similarities = np.maximum(similarities, image_sims)
+            else:
+                similarities += image_weight * image_sims
 
-        # 排序并返回top_k
-        sorted_results = sorted(all_results.values(), key=lambda x: x['score'], reverse=True)
-        return sorted_results[:top_k]
+        return similarities
 
     def add_documents(self, documents: List[Dict[str, Any]]) -> None:
-        """向所有搜索引擎添加文档"""
-        for engine in self.search_engines:
-            try:
-                engine.add_documents(documents)
-            except Exception as e:
-                print(f"Error adding documents to engine: {e}")
+        """添加文档并更新索引"""
+        if not documents:
+            return
+
+        logger.info(f"Adding {len(documents)} documents...")
+
+        self.documents.extend(documents)
+
+        # 重新计算embeddings（增量更新）
+        if self.clip_model is not None:
+            # 为新文档计算embeddings
+            new_texts = [doc.get('text', '') for doc in documents]
+            new_images = [doc.get('image') for doc in documents]
+
+            if new_texts:
+                new_text_embeddings = self._compute_text_embeddings_batch(new_texts, 32)
+                self.text_embeddings.extend(new_text_embeddings)
+
+            if any(img is not None for img in new_images):
+                processed_images = [self._process_image(img) for img in new_images]
+                new_image_embeddings = self._compute_image_embeddings_batch(processed_images, 32)
+                self.image_embeddings.extend(new_image_embeddings)
+
+        # 清空相关缓存
+        self.query_cache.clear()
+
+        logger.info("Documents added successfully")
+
+    async def search_multimodal_async(self, text_query: str = None,
+                                      image_query: Union[str, Image.Image] = None,
+                                      top_k: int = 3) -> List[Dict[str, Any]]:
+        """异步多模态搜索"""
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            self.executor, self.search_multimodal, text_query, image_query, top_k
+        )
+
+    def save_index(self, save_path: str):
+        """保存索引"""
+        save_path = Path(save_path)
+        save_path.mkdir(parents=True, exist_ok=True)
+
+        # 保存文档
+        with open(save_path / "documents.json", 'w', encoding='utf-8') as f:
+            json.dump(self.documents, f, ensure_ascii=False, indent=2, default=str)
+
+        # 保存embeddings
+        if self.text_embeddings:
+            np.save(save_path / "text_embeddings.npy", np.array(self.text_embeddings))
+
+        if self.image_embeddings:
+            # 处理None值
+            valid_embeddings = []
+            valid_indices = []
+            for i, emb in enumerate(self.image_embeddings):
+                if emb is not None:
+                    valid_embeddings.append(emb)
+                    valid_indices.append(i)
+
+            if valid_embeddings:
+                np.save(save_path / "image_embeddings.npy", np.array(valid_embeddings))
+                np.save(save_path / "image_indices.npy", np.array(valid_indices))
+
+        # 保存配置
+        config = {
+            'model_name': self.model_name,
+            'device': self.device,
+            'num_documents': len(self.documents)
+        }
+
+        with open(save_path / "config.json", 'w') as f:
+            json.dump(config, f, indent=2)
+
+        logger.info(f"Index saved to {save_path}")
+
+    def load_index(self, load_path: str):
+        """加载索引"""
+        load_path = Path(load_path)
+
+        # 加载文档
+        with open(load_path / "documents.json", 'r', encoding='utf-8') as f:
+            self.documents = json.load(f)
+
+        # 加载embeddings
+        if (load_path / "text_embeddings.npy").exists():
+            self.text_embeddings = list(np.load(load_path / "text_embeddings.npy"))
+
+        if (load_path / "image_embeddings.npy").exists():
+            valid_embeddings = np.load(load_path / "image_embeddings.npy")
+            valid_indices = np.load(load_path / "image_indices.npy")
+
+            # 重建完整的image_embeddings列表
+            self.image_embeddings = [None] * len(self.documents)
+            for emb, idx in zip(valid_embeddings, valid_indices):
+                self.image_embeddings[idx] = emb
+
+        logger.info(f"Index loaded from {load_path}, {len(self.documents)} documents")
+
+    def get_statistics(self) -> Dict[str, Any]:
+        """获取统计信息"""
+        stats = {
+            'num_documents': len(self.documents),
+            'num_text_embeddings': len([e for e in self.text_embeddings if e is not None]),
+            'num_image_embeddings': len([e for e in self.image_embeddings if e is not None]),
+            'model_name': self.model_name,
+            'device': self.device,
+        }
+        stats.update(self.get_cache_stats())
+        return stats
+
+    def __del__(self):
+        """清理资源"""
+        if hasattr(self, 'executor'):
+            self.executor.shutdown(wait=False)
 
 
 def create_multimodal_search_engine(config: Dict[str, Any]) -> MultimodalSearchEngine:
-    """创建多模态搜索引擎"""
+    """创建多模态搜索引擎工厂函数"""
     search_config = config['search']
-    engine_type = search_config.get('engine_type', 'imagetext')
+    engine_type = search_config.get('engine_type', 'advanced_imagetext')
 
-    if engine_type == 'imagetext':
-        # 加载多模态文档
-        documents_path = search_config.get('multimodal_documents_path', None)
-        documents = []
-
-        if documents_path:
-            import json
-            with open(documents_path, 'r', encoding='utf-8') as f:
-                documents = json.load(f)
-
-        return ImageTextSearchEngine(documents)
-
-    elif engine_type == 'clip':
-        model_name = search_config.get('clip_model', 'ViT-B/32')
-        engine = CLIPSearchEngine(model_name)
-
-        # 加载文档
-        documents_path = search_config.get('multimodal_documents_path', None)
-        if documents_path:
-            import json
-            with open(documents_path, 'r', encoding='utf-8') as f:
-                documents = json.load(f)
-            engine.add_documents(documents)
-
-        return engine
-
-    elif engine_type == 'hybrid_multimodal':
-        engines = []
-        weights = search_config.get('weights', [])
-
-        for i, sub_config in enumerate(search_config['engines']):
-            sub_engine = create_multimodal_search_engine({'search': sub_config})
-            engines.append(sub_engine)
-
-        return HybridMultimodalSearchEngine(engines, weights if weights else None)
-
+    if engine_type == 'advanced_imagetext':
+        return AdvancedImageTextSearchEngine(
+            cache_dir=search_config.get('cache_dir', './cache/multimodal_search'),
+            model_name=search_config.get('clip_model', 'ViT-B/32'),
+            device=search_config.get('device', 'auto')
+        )
     else:
-        # 回退到文本搜索引擎
-        from ..search.search_engine import create_search_engine
-        text_engine = create_search_engine(config)
-
-        # 包装为多模态搜索引擎
-        class TextOnlyMultimodalWrapper(MultimodalSearchEngine):
-            def __init__(self, text_engine):
-                self.text_engine = text_engine
-
-            def search_multimodal(self, text_query=None, image_query=None, top_k=3):
-                if text_query:
-                    texts = self.text_engine.search(text_query, top_k)
-                    return [{'text': text, 'image': None, 'score': 1.0, 'doc_index': i}
-                            for i, text in enumerate(texts)]
-                return []
-
-            def add_documents(self, documents):
-                texts = [doc.get('text', '') for doc in documents]
-                self.text_engine.add_documents(texts)
-
-        return TextOnlyMultimodalWrapper(text_engine)
+        raise ValueError(f"Unknown multimodal search engine type: {engine_type}")
