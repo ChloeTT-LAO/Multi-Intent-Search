@@ -360,9 +360,6 @@ Format your response as JSON:
 
 def generate_multimodal_search_queries(question: str, image_analysis: Dict[str, Any],
                                        use_api: bool = False, api_key: str = None) -> List[str]:
-    """生成多模态搜索查询"""
-    if not use_api or not api_key:
-        return generate_simple_multimodal_queries(question, image_analysis)
 
     # 使用API生成查询
     try:
